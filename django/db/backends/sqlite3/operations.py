@@ -21,6 +21,9 @@ class DatabaseOperations(BaseDatabaseOperations):
         'DateTimeField': 'TEXT',
     }
     explain_prefix = 'EXPLAIN QUERY PLAN'
+    # List of datatypes to that cannot be extracted with JSON_EXTRACT() on
+    # SQLite. Use JSON_TYPE() instead.
+    jsonfield_datatype_values = frozenset(['null', 'false', 'true'])
 
     def bulk_batch_size(self, fields, objs):
         """
@@ -77,14 +80,22 @@ class DatabaseOperations(BaseDatabaseOperations):
         """Do nothing since formatting is handled in the custom function."""
         return sql
 
-    def date_trunc_sql(self, lookup_type, field_name):
-        return "django_date_trunc('%s', %s)" % (lookup_type.lower(), field_name)
+    def date_trunc_sql(self, lookup_type, field_name, tzname=None):
+        return "django_date_trunc('%s', %s, %s, %s)" % (
+            lookup_type.lower(),
+            field_name,
+            *self._convert_tznames_to_sql(tzname),
+        )
 
-    def time_trunc_sql(self, lookup_type, field_name):
-        return "django_time_trunc('%s', %s)" % (lookup_type.lower(), field_name)
+    def time_trunc_sql(self, lookup_type, field_name, tzname=None):
+        return "django_time_trunc('%s', %s, %s, %s)" % (
+            lookup_type.lower(),
+            field_name,
+            *self._convert_tznames_to_sql(tzname),
+        )
 
     def _convert_tznames_to_sql(self, tzname):
-        if settings.USE_TZ:
+        if tzname and settings.USE_TZ:
             return "'%s'" % tzname, "'%s'" % self.connection.timezone_name
         return 'NULL', 'NULL'
 
@@ -269,7 +280,7 @@ class DatabaseOperations(BaseDatabaseOperations):
             converters.append(self.get_decimalfield_converter(expression))
         elif internal_type == 'UUIDField':
             converters.append(self.convert_uuidfield_value)
-        elif internal_type in ('NullBooleanField', 'BooleanField'):
+        elif internal_type == 'BooleanField':
             converters.append(self.convert_booleanfield_value)
         return converters
 

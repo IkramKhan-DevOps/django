@@ -154,7 +154,6 @@ class TestInline(TestDataMixin, TestCase):
         # Identically named callable isn't present in the parent ModelAdmin,
         # rendering of the add view shouldn't explode
         response = self.client.get(reverse('admin:admin_inlines_novel_add'))
-        self.assertEqual(response.status_code, 200)
         # View should have the child inlines section
         self.assertContains(
             response,
@@ -164,7 +163,6 @@ class TestInline(TestDataMixin, TestCase):
     def test_callable_lookup(self):
         """Admin inline should invoke local callable when its name is listed in readonly_fields"""
         response = self.client.get(reverse('admin:admin_inlines_poll_add'))
-        self.assertEqual(response.status_code, 200)
         # Add parent object view should have the child inlines section
         self.assertContains(
             response,
@@ -481,6 +479,16 @@ class TestInline(TestDataMixin, TestCase):
             'class="vTextField" maxlength="40" id="id_chapter_set-0-name">',
             html=True
         )
+
+    def test_inlines_plural_heading_foreign_key(self):
+        response = self.client.get(reverse('admin:admin_inlines_holder4_add'))
+        self.assertContains(response, '<h2>Inner4 stackeds</h2>', html=True)
+        self.assertContains(response, '<h2>Inner4 tabulars</h2>', html=True)
+
+    def test_inlines_singular_heading_one_to_one(self):
+        response = self.client.get(reverse('admin:admin_inlines_person_add'))
+        self.assertContains(response, '<h2>Author</h2>', html=True)  # Tabular.
+        self.assertContains(response, '<h2>Fashionista</h2>', html=True)  # Stacked.
 
 
 @override_settings(ROOT_URLCONF='admin_inlines.urls')
@@ -1348,3 +1356,41 @@ class SeleniumTests(AdminSeleniumTestCase):
         self.assertEqual(
             len(self.selenium.find_elements_by_css_selector(tabular_inline_formset_selector)), 1
         )
+
+    def test_inlines_verbose_name(self):
+        """
+        The item added by the "Add another XXX" link must use the correct
+        verbose_name in the inline form.
+        """
+        self.admin_login(username='super', password='secret')
+        # Hide sidebar.
+        self.selenium.get(self.live_server_url + reverse('admin:admin_inlines_course_add'))
+        toggle_button = self.selenium.find_element_by_css_selector('#toggle-nav-sidebar')
+        toggle_button.click()
+        # Each combination of horizontal/vertical fiter with stacked/tabular
+        # inlines.
+        tests = [
+            'admin:admin_inlines_course_add',
+            'admin:admin_inlines_courseproxy_add',
+            'admin:admin_inlines_courseproxy1_add',
+            'admin:admin_inlines_courseproxy2_add',
+        ]
+        css_selector = '.dynamic-class_set#class_set-%s h2'
+
+        for url_name in tests:
+            with self.subTest(url=url_name):
+                self.selenium.get(self.live_server_url + reverse(url_name))
+                # First inline shows the verbose_name.
+                available, chosen = self.selenium.find_elements_by_css_selector(css_selector % 0)
+                self.assertEqual(available.text, 'AVAILABLE ATTENDANT')
+                self.assertEqual(chosen.text, 'CHOSEN ATTENDANT')
+                # Added inline should also have the correct verbose_name.
+                self.selenium.find_element_by_link_text('Add another Class').click()
+                available, chosen = self.selenium.find_elements_by_css_selector(css_selector % 1)
+                self.assertEqual(available.text, 'AVAILABLE ATTENDANT')
+                self.assertEqual(chosen.text, 'CHOSEN ATTENDANT')
+                # Third inline should also have the correct verbose_name.
+                self.selenium.find_element_by_link_text('Add another Class').click()
+                available, chosen = self.selenium.find_elements_by_css_selector(css_selector % 2)
+                self.assertEqual(available.text, 'AVAILABLE ATTENDANT')
+                self.assertEqual(chosen.text, 'CHOSEN ATTENDANT')

@@ -89,7 +89,8 @@ END;
             # https://docs.oracle.com/en/database/oracle/oracle-database/18/sqlrf/EXTRACT-datetime.html
             return "EXTRACT(%s FROM %s)" % (lookup_type.upper(), field_name)
 
-    def date_trunc_sql(self, lookup_type, field_name):
+    def date_trunc_sql(self, lookup_type, field_name, tzname=None):
+        field_name = self._convert_field_to_tz(field_name, tzname)
         # https://docs.oracle.com/en/database/oracle/oracle-database/18/sqlrf/ROUND-and-TRUNC-Date-Functions.html
         if lookup_type in ('year', 'month'):
             return "TRUNC(%s, '%s')" % (field_name, lookup_type.upper())
@@ -114,7 +115,7 @@ END;
         return tzname
 
     def _convert_field_to_tz(self, field_name, tzname):
-        if not settings.USE_TZ:
+        if not (settings.USE_TZ and tzname):
             return field_name
         if not self._tzname_re.match(tzname):
             raise ValueError("Invalid time zone name: %s" % tzname)
@@ -161,10 +162,11 @@ END;
             sql = "CAST(%s AS DATE)" % field_name  # Cast to DATE removes sub-second precision.
         return sql
 
-    def time_trunc_sql(self, lookup_type, field_name):
+    def time_trunc_sql(self, lookup_type, field_name, tzname=None):
         # The implementation is similar to `datetime_trunc_sql` as both
         # `DateTimeField` and `TimeField` are stored as TIMESTAMP where
         # the date part of the later is ignored.
+        field_name = self._convert_field_to_tz(field_name, tzname)
         if lookup_type == 'hour':
             sql = "TRUNC(%s, 'HH24')" % field_name
         elif lookup_type == 'minute':
@@ -180,7 +182,7 @@ END;
             converters.append(self.convert_textfield_value)
         elif internal_type == 'BinaryField':
             converters.append(self.convert_binaryfield_value)
-        elif internal_type in ['BooleanField', 'NullBooleanField']:
+        elif internal_type == 'BooleanField':
             converters.append(self.convert_booleanfield_value)
         elif internal_type == 'DateTimeField':
             if settings.USE_TZ:
@@ -256,16 +258,14 @@ END;
         columns = []
         for param in returning_params:
             value = param.get_value()
-            if value is None or value == []:
-                # cx_Oracle < 6.3 returns None, >= 6.3 returns empty list.
+            if value == []:
                 raise DatabaseError(
                     'The database did not return a new row id. Probably '
                     '"ORA-1403: no data found" was raised internally but was '
                     'hidden by the Oracle OCI library (see '
                     'https://code.djangoproject.com/ticket/28859).'
                 )
-            # cx_Oracle < 7 returns value, >= 7 returns list with single value.
-            columns.append(value[0] if isinstance(value, list) else value)
+            columns.append(value[0])
         return tuple(columns)
 
     def field_cast_sql(self, db_type, internal_type):
@@ -340,9 +340,6 @@ END;
         # that stage so we aren't really making the name longer here.
         name = name.replace('%', '%%')
         return name.upper()
-
-    def random_function_sql(self):
-        return "DBMS_RANDOM.RANDOM"
 
     def regex_lookup(self, lookup_type):
         if lookup_type == 'regex':

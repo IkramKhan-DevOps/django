@@ -39,6 +39,7 @@ class AdminSidebarTests(TestCase):
 
     def test_sidebar_not_on_index(self):
         response = self.client.get(reverse('test_with_sidebar:index'))
+        self.assertContains(response, '<div class="main" id="main">')
         self.assertNotContains(response, '<nav class="sticky" id="nav-sidebar">')
 
     def test_sidebar_disabled(self):
@@ -81,9 +82,8 @@ class AdminSidebarTests(TestCase):
     def test_included_app_list_template_context_fully_set(self):
         # All context variables should be set when rendering the sidebar.
         url = reverse('test_with_sidebar:auth_user_changelist')
-        with self.assertRaisesMessage(AssertionError, 'no logs'):
-            with self.assertLogs('django.template', 'DEBUG'):
-                self.client.get(url)
+        with self.assertNoLogs('django.template', 'DEBUG'):
+            self.client.get(url)
 
 
 @override_settings(ROOT_URLCONF='admin_views.test_nav_sidebar')

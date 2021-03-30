@@ -72,7 +72,7 @@ class ExclusionConstraint(BaseConstraint):
             if isinstance(expression, str):
                 expression = F(expression)
             expression = expression.resolve_expression(query=query)
-            sql, params = expression.as_sql(compiler, schema_editor.connection)
+            sql, params = compiler.compile(expression)
             try:
                 opclass = self.opclasses[idx]
                 if opclass:
@@ -155,12 +155,13 @@ class ExclusionConstraint(BaseConstraint):
         return super().__eq__(other)
 
     def __repr__(self):
-        return '<%s: index_type=%s, expressions=%s%s%s%s%s>' % (
+        return '<%s: index_type=%s expressions=%s name=%s%s%s%s%s>' % (
             self.__class__.__qualname__,
-            self.index_type,
-            self.expressions,
-            '' if self.condition is None else ', condition=%s' % self.condition,
-            '' if self.deferrable is None else ', deferrable=%s' % self.deferrable,
-            '' if not self.include else ', include=%s' % repr(self.include),
-            '' if not self.opclasses else ', opclasses=%s' % repr(self.opclasses),
+            repr(self.index_type),
+            repr(self.expressions),
+            repr(self.name),
+            '' if self.condition is None else ' condition=%s' % self.condition,
+            '' if self.deferrable is None else ' deferrable=%s' % self.deferrable,
+            '' if not self.include else ' include=%s' % repr(self.include),
+            '' if not self.opclasses else ' opclasses=%s' % repr(self.opclasses),
         )

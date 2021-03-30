@@ -122,6 +122,9 @@ class Origin:
     def __str__(self):
         return self.name
 
+    def __repr__(self):
+        return '<%s name=%r>' % (self.__class__.__qualname__, self.name)
+
     def __eq__(self, other):
         return (
             isinstance(other, Origin) and
@@ -157,6 +160,12 @@ class Template:
     def __iter__(self):
         for node in self.nodelist:
             yield from node
+
+    def __repr__(self):
+        return '<%s template_string="%s...">' % (
+            self.__class__.__qualname__,
+            self.source[:20].replace('\n', ''),
+        )
 
     def _render(self, context):
         return self.nodelist.render(context)
@@ -308,7 +317,7 @@ class Token:
         self.lineno = lineno
         self.position = position
 
-    def __str__(self):
+    def __repr__(self):
         token_name = self.token_type.name.capitalize()
         return ('<%s token: "%s...">' %
                 (token_name, self.contents[:20].replace('\n', '')))
@@ -333,6 +342,13 @@ class Lexer:
     def __init__(self, template_string):
         self.template_string = template_string
         self.verbatim = False
+
+    def __repr__(self):
+        return '<%s template_string="%s...", verbatim=%s>' % (
+            self.__class__.__qualname__,
+            self.template_string[:20].replace('\n', ''),
+            self.verbatim,
+        )
 
     def tokenize(self):
         """
@@ -422,6 +438,9 @@ class Parser:
         for builtin in builtins:
             self.add_library(builtin)
         self.origin = origin
+
+    def __repr__(self):
+        return '<%s tokens=%r>' % (self.__class__.__qualname__, self.tokens)
 
     def parse(self, parse_until=None):
         """
@@ -722,6 +741,9 @@ class FilterExpression:
 
     def __str__(self):
         return self.token
+
+    def __repr__(self):
+        return "<%s %r>" % (self.__class__.__qualname__, self.token)
 
 
 class Variable:

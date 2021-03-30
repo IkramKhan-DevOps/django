@@ -1,11 +1,9 @@
 import html.entities
 import re
 import unicodedata
-import warnings
 from gzip import GzipFile
 from io import BytesIO
 
-from django.utils.deprecation import RemovedInDjango40Warning
 from django.utils.functional import SimpleLazyObject, keep_lazy_text, lazy
 from django.utils.regex_helper import _lazy_re_compile
 from django.utils.translation import gettext as _, gettext_lazy, pgettext
@@ -14,7 +12,11 @@ from django.utils.translation import gettext as _, gettext_lazy, pgettext
 @keep_lazy_text
 def capfirst(x):
     """Capitalize the first letter of a string."""
-    return x and str(x)[0].upper() + str(x)[1:]
+    if not x:
+        return x
+    if not isinstance(x, str):
+        x = str(x)
+    return x[0].upper() + x[1:]
 
 
 # Set up regular expressions
@@ -357,16 +359,6 @@ def _replace_entity(match):
 
 
 _entity_re = _lazy_re_compile(r"&(#?[xX]?(?:[0-9a-fA-F]+|\w{1,8}));")
-
-
-@keep_lazy_text
-def unescape_entities(text):
-    warnings.warn(
-        'django.utils.text.unescape_entities() is deprecated in favor of '
-        'html.unescape().',
-        RemovedInDjango40Warning, stacklevel=2,
-    )
-    return _entity_re.sub(_replace_entity, str(text))
 
 
 @keep_lazy_text

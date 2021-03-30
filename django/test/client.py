@@ -181,7 +181,7 @@ class AsyncClientHandler(BaseHandler):
             body_file = FakePayload('')
 
         request_started.disconnect(close_old_connections)
-        await sync_to_async(request_started.send)(sender=self.__class__, scope=scope)
+        await sync_to_async(request_started.send, thread_sensitive=False)(sender=self.__class__, scope=scope)
         request_started.connect(close_old_connections)
         request = ASGIRequest(scope, body_file)
         # Sneaky little hack so that we can easily get round
@@ -197,14 +197,14 @@ class AsyncClientHandler(BaseHandler):
         response.asgi_request = request
         # Emulate a server by calling the close method on completion.
         if response.streaming:
-            response.streaming_content = await sync_to_async(closing_iterator_wrapper)(
+            response.streaming_content = await sync_to_async(closing_iterator_wrapper, thread_sensitive=False)(
                 response.streaming_content,
                 response.close,
             )
         else:
             request_finished.disconnect(close_old_connections)
             # Will fire request_finished.
-            await sync_to_async(response.close)()
+            await sync_to_async(response.close, thread_sensitive=False)()
             request_finished.connect(close_old_connections)
         return response
 
@@ -540,11 +540,17 @@ class AsyncRequestFactory(RequestFactory):
         }
         if data:
             s['headers'].extend([
-                (b'content-length', bytes(len(data))),
+                (b'content-length', str(len(data)).encode('ascii')),
                 (b'content-type', content_type.encode('ascii')),
             ])
             s['_body_file'] = FakePayload(data)
-        s.update(extra)
+        follow = extra.pop('follow', None)
+        if follow is not None:
+            s['follow'] = follow
+        s['headers'] += [
+            (key.lower().encode('ascii'), value.encode('latin1'))
+            for key, value in extra.items()
+        ]
         # If QUERY_STRING is absent or empty, we want to extract it from the
         # URL.
         if not s.get('query_string'):
@@ -719,7 +725,10 @@ class Client(ClientMixin, RequestFactory):
         response.context = data.get('context')
         response.json = partial(self._parse_json, response)
         # Attach the ResolverMatch instance to the response.
-        response.resolver_match = SimpleLazyObject(lambda: resolve(request['PATH_INFO']))
+        urlconf = getattr(response.wsgi_request, 'urlconf', None)
+        response.resolver_match = SimpleLazyObject(
+            lambda: resolve(request['PATH_INFO'], urlconf=urlconf),
+        )
         # Flatten a single context. Not really necessary anymore thanks to the
         # __getattr__ flattening in ContextList, but has some edge case
         # backwards compatibility implications.
@@ -908,7 +917,10 @@ class AsyncClient(ClientMixin, AsyncRequestFactory):
         response.context = data.get('context')
         response.json = partial(self._parse_json, response)
         # Attach the ResolverMatch instance to the response.
-        response.resolver_match = SimpleLazyObject(lambda: resolve(request['path']))
+        urlconf = getattr(response.asgi_request, 'urlconf', None)
+        response.resolver_match = SimpleLazyObject(
+            lambda: resolve(request['path'], urlconf=urlconf),
+        )
         # Flatten a single context. Not really necessary anymore thanks to the
         # __getattr__ flattening in ContextList, but has some edge case
         # backwards compatibility implications.

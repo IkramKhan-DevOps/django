@@ -1,14 +1,16 @@
 import datetime
 from unittest import mock
 
+from django.contrib.postgres.indexes import OpClass
 from django.db import (
     IntegrityError, NotSupportedError, connection, transaction,
 )
 from django.db.models import (
-    CheckConstraint, Deferrable, F, Func, Q, UniqueConstraint,
+    CheckConstraint, Deferrable, F, Func, IntegerField, Q, UniqueConstraint,
 )
-from django.db.models.functions import Left
-from django.test import skipUnlessDBFeature
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Cast, Left, Lower
+from django.test import modify_settings, skipUnlessDBFeature
 from django.utils import timezone
 
 from . import PostgreSQLTestCase
@@ -25,6 +27,7 @@ except ImportError:
     pass
 
 
+@modify_settings(INSTALLED_APPS={'append': 'django.contrib.postgres'})
 class SchemaTests(PostgreSQLTestCase):
     get_opclass_query = '''
         SELECT opcname, c.relname FROM pg_opclass AS oc
@@ -165,6 +168,33 @@ class SchemaTests(PostgreSQLTestCase):
                 [('varchar_pattern_ops', constraint.name)],
             )
 
+    @skipUnlessDBFeature('supports_expression_indexes')
+    def test_opclass_func(self):
+        constraint = UniqueConstraint(
+            OpClass(Lower('scene'), name='text_pattern_ops'),
+            name='test_opclass_func',
+        )
+        with connection.schema_editor() as editor:
+            editor.add_constraint(Scene, constraint)
+        constraints = self.get_constraints(Scene._meta.db_table)
+        self.assertIs(constraints[constraint.name]['unique'], True)
+        self.assertIn(constraint.name, constraints)
+        with editor.connection.cursor() as cursor:
+            cursor.execute(self.get_opclass_query, [constraint.name])
+            self.assertEqual(
+                cursor.fetchall(),
+                [('text_pattern_ops', constraint.name)],
+            )
+        Scene.objects.create(scene='Scene 10', setting='The dark forest of Ewing')
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Scene.objects.create(scene='ScEnE 10', setting="Sir Bedemir's Castle")
+        Scene.objects.create(scene='Scene 5', setting="Sir Bedemir's Castle")
+        # Drop the constraint.
+        with connection.schema_editor() as editor:
+            editor.remove_constraint(Scene, constraint)
+        self.assertNotIn(constraint.name, self.get_constraints(Scene._meta.db_table))
+        Scene.objects.create(scene='ScEnE 10', setting="Sir Bedemir's Castle")
+
 
 class ExclusionConstraintTests(PostgreSQLTestCase):
     def get_constraints(self, table):
@@ -281,8 +311,8 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         )
         self.assertEqual(
             repr(constraint),
-            "<ExclusionConstraint: index_type=GIST, expressions=["
-            "(F(datespan), '&&'), (F(room), '=')]>",
+            "<ExclusionConstraint: index_type='GIST' expressions=["
+            "(F(datespan), '&&'), (F(room), '=')] name='exclude_overlapping'>",
         )
         constraint = ExclusionConstraint(
             name='exclude_overlapping',
@@ -292,8 +322,9 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         )
         self.assertEqual(
             repr(constraint),
-            "<ExclusionConstraint: index_type=SPGiST, expressions=["
-            "(F(datespan), '-|-')], condition=(AND: ('cancelled', False))>",
+            "<ExclusionConstraint: index_type='SPGiST' expressions=["
+            "(F(datespan), '-|-')] name='exclude_overlapping' "
+            "condition=(AND: ('cancelled', False))>",
         )
         constraint = ExclusionConstraint(
             name='exclude_overlapping',
@@ -302,8 +333,9 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         )
         self.assertEqual(
             repr(constraint),
-            "<ExclusionConstraint: index_type=GIST, expressions=["
-            "(F(datespan), '-|-')], deferrable=Deferrable.IMMEDIATE>",
+            "<ExclusionConstraint: index_type='GIST' expressions=["
+            "(F(datespan), '-|-')] name='exclude_overlapping' "
+            "deferrable=Deferrable.IMMEDIATE>",
         )
         constraint = ExclusionConstraint(
             name='exclude_overlapping',
@@ -312,8 +344,9 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         )
         self.assertEqual(
             repr(constraint),
-            "<ExclusionConstraint: index_type=GIST, expressions=["
-            "(F(datespan), '-|-')], include=('cancelled', 'room')>",
+            "<ExclusionConstraint: index_type='GIST' expressions=["
+            "(F(datespan), '-|-')] name='exclude_overlapping' "
+            "include=('cancelled', 'room')>",
         )
         constraint = ExclusionConstraint(
             name='exclude_overlapping',
@@ -322,8 +355,9 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         )
         self.assertEqual(
             repr(constraint),
-            "<ExclusionConstraint: index_type=GIST, expressions=["
-            "(F(datespan), '-|-')], opclasses=['range_ops']>",
+            "<ExclusionConstraint: index_type='GIST' expressions=["
+            "(F(datespan), '-|-')] name='exclude_overlapping' "
+            "opclasses=['range_ops']>",
         )
 
     def test_eq(self):
@@ -620,6 +654,22 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
             editor.add_constraint(Scene, constraint)
         self.assertIn(constraint_name, self.get_constraints(Scene._meta.db_table))
 
+    def test_expressions_with_key_transform(self):
+        constraint_name = 'exclude_overlapping_reservations_smoking'
+        constraint = ExclusionConstraint(
+            name=constraint_name,
+            expressions=[
+                (F('datespan'), RangeOperators.OVERLAPS),
+                (KeyTextTransform('smoking', 'requirements'), RangeOperators.EQUAL),
+            ],
+        )
+        with connection.schema_editor() as editor:
+            editor.add_constraint(HotelReservation, constraint)
+        self.assertIn(
+            constraint_name,
+            self.get_constraints(HotelReservation._meta.db_table),
+        )
+
     def test_range_adjacent_initially_deferred(self):
         constraint_name = 'ints_adjacent_deferred'
         self.assertNotIn(constraint_name, self.get_constraints(RangesModel._meta.db_table))
@@ -766,3 +816,14 @@ class ExclusionConstraintTests(PostgreSQLTestCase):
         with connection.schema_editor() as editor:
             editor.add_constraint(RangesModel, constraint)
         self.assertIn(constraint_name, self.get_constraints(RangesModel._meta.db_table))
+
+    def test_range_equal_cast(self):
+        constraint_name = 'exclusion_equal_room_cast'
+        self.assertNotIn(constraint_name, self.get_constraints(Room._meta.db_table))
+        constraint = ExclusionConstraint(
+            name=constraint_name,
+            expressions=[(Cast('number', IntegerField()), RangeOperators.EQUAL)],
+        )
+        with connection.schema_editor() as editor:
+            editor.add_constraint(Room, constraint)
+        self.assertIn(constraint_name, self.get_constraints(Room._meta.db_table))

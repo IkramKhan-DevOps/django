@@ -204,6 +204,7 @@ Ess
 ETag
 ETags
 exe
+exfiltration
 extensibility
 Facebook
 fallback
@@ -476,6 +477,7 @@ postfix
 postgis
 postgres
 postgresql
+PowerShell
 pq
 pre
 precisions
@@ -607,6 +609,7 @@ sortable
 spam
 spammers
 spatialite
+Spectre
 Springmeyer
 SQL
 ssi
@@ -675,6 +678,7 @@ textarea
 th
 that'll
 Thejaswi
+theming
 This'll
 threadlocals
 threadpool
@@ -747,6 +751,7 @@ unpickled
 unpickling
 unpopulated
 unpythonic
+Unregisters
 unrendered
 unreproducible
 Unreviewed

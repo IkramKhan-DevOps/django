@@ -1,9 +1,9 @@
 import os
+import unittest.loader
 from argparse import ArgumentParser
 from contextlib import contextmanager
-from unittest import (
-    TestSuite, TextTestRunner, defaultTestLoader, mock, skipUnless,
-)
+from importlib import import_module
+from unittest import TestSuite, TextTestRunner, defaultTestLoader, mock
 
 from django.db import connections
 from django.test import SimpleTestCase
@@ -11,7 +11,6 @@ from django.test.runner import DiscoverRunner
 from django.test.utils import (
     NullTimeKeeper, TimeKeeper, captured_stderr, captured_stdout,
 )
-from django.utils.version import PY37
 
 
 @contextmanager
@@ -83,7 +82,6 @@ class DiscoverRunnerTests(SimpleTestCase):
 
         self.assertEqual(count, 1)
 
-    @skipUnless(PY37, 'unittest -k option requires Python 3.7 and later')
     def test_name_patterns(self):
         all_test_1 = [
             'DjangoCase1.test_1', 'DjangoCase2.test_1',
@@ -213,6 +211,15 @@ class DiscoverRunnerTests(SimpleTestCase):
         self.assertIn('test_2', suite[9].id(),
                       msg="Methods of unittest cases should be reversed.")
 
+    def test_build_suite_failed_tests_first(self):
+        # The "doesnotexist" label results in a _FailedTest instance.
+        suite = DiscoverRunner().build_suite(
+            test_labels=['test_runner_apps.sample', 'doesnotexist'],
+        )
+        tests = list(suite)
+        self.assertIsInstance(tests[0], unittest.loader._FailedTest)
+        self.assertNotIsInstance(tests[-1], unittest.loader._FailedTest)
+
     def test_overridable_get_test_runner_kwargs(self):
         self.assertIsInstance(DiscoverRunner().get_test_runner_kwargs(), dict)
 
@@ -253,6 +260,18 @@ class DiscoverRunnerTests(SimpleTestCase):
         self.assertEqual(count_tests(tags=['foo'], exclude_tags=['bar', 'baz']), 1)
         self.assertEqual(count_tests(exclude_tags=['foo']), 0)
 
+    def test_tag_fail_to_load(self):
+        with self.assertRaises(SyntaxError):
+            import_module('test_runner_apps.tagged.tests_syntax_error')
+        runner = DiscoverRunner(tags=['syntax_error'])
+        # A label that doesn't exist or cannot be loaded due to syntax errors
+        # is always considered matching.
+        suite = runner.build_suite(['doesnotexist', 'test_runner_apps.tagged'])
+        self.assertEqual([test.id() for test in suite], [
+            'unittest.loader._FailedTest.doesnotexist',
+            'unittest.loader._FailedTest.test_runner_apps.tagged.tests_syntax_error',
+        ])
+
     def test_included_tags_displayed(self):
         runner = DiscoverRunner(tags=['foo', 'bar'], verbosity=2)
         with captured_stdout() as stdout:
@@ -272,14 +291,6 @@ class DiscoverRunnerTests(SimpleTestCase):
         )
         with self.assertRaisesMessage(ValueError, msg):
             DiscoverRunner(pdb=True, parallel=2)
-
-    def test_buffer_with_parallel(self):
-        msg = (
-            'You cannot use -b/--buffer with parallel tests; pass '
-            '--parallel=1 to use it.'
-        )
-        with self.assertRaisesMessage(ValueError, msg):
-            DiscoverRunner(buffer=True, parallel=2)
 
     def test_buffer_mode_test_pass(self):
         runner = DiscoverRunner(buffer=True, verbose=0)
@@ -358,7 +369,7 @@ class DiscoverRunnerGetDatabasesTests(SimpleTestCase):
     def assertSkippedDatabases(self, test_labels, expected_databases):
         databases, output = self.get_databases(test_labels)
         self.assertEqual(databases, expected_databases)
-        skipped_databases = set(connections) - expected_databases
+        skipped_databases = set(connections) - set(expected_databases)
         if skipped_databases:
             self.assertIn(self.skip_msg + ', '.join(sorted(skipped_databases)), output)
         else:
@@ -366,31 +377,37 @@ class DiscoverRunnerGetDatabasesTests(SimpleTestCase):
 
     def test_mixed(self):
         databases, output = self.get_databases(['test_runner_apps.databases.tests'])
-        self.assertEqual(databases, set(connections))
+        self.assertEqual(databases, {'default': True, 'other': False})
         self.assertNotIn(self.skip_msg, output)
 
     def test_all(self):
         databases, output = self.get_databases(['test_runner_apps.databases.tests.AllDatabasesTests'])
-        self.assertEqual(databases, set(connections))
+        self.assertEqual(databases, {alias: False for alias in connections})
         self.assertNotIn(self.skip_msg, output)
 
     def test_default_and_other(self):
         self.assertSkippedDatabases([
             'test_runner_apps.databases.tests.DefaultDatabaseTests',
             'test_runner_apps.databases.tests.OtherDatabaseTests',
-        ], {'default', 'other'})
+        ], {'default': False, 'other': False})
 
     def test_default_only(self):
         self.assertSkippedDatabases([
             'test_runner_apps.databases.tests.DefaultDatabaseTests',
-        ], {'default'})
+        ], {'default': False})
 
     def test_other_only(self):
         self.assertSkippedDatabases([
             'test_runner_apps.databases.tests.OtherDatabaseTests'
-        ], {'other'})
+        ], {'other': False})
 
     def test_no_databases_required(self):
         self.assertSkippedDatabases([
             'test_runner_apps.databases.tests.NoDatabaseTests'
-        ], set())
+        ], {})
+
+    def test_serialize(self):
+        databases, _ = self.get_databases([
+            'test_runner_apps.databases.tests.DefaultDatabaseSerializedTests'
+        ])
+        self.assertEqual(databases, {'default': True})

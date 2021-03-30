@@ -106,6 +106,20 @@ the query construction and is not part of the public API. However, it is safe
 (and fully supported) to pickle and unpickle the attribute's contents as
 described here.
 
+.. admonition:: Restrictions on ``QuerySet.values_list()``
+
+    If you recreate :meth:`QuerySet.values_list` using the pickled ``query``
+    attribute, it will be converted to :meth:`QuerySet.values`::
+
+        >>> import pickle
+        >>> qs = Blog.objects.values_list('id', 'name')
+        >>> qs
+        <QuerySet [(1, 'Beatles Blog')]>
+        >>> reloaded_qs = Blog.objects.all()
+        >>> reloaded_qs.query = pickle.loads(pickle.dumps(qs.query))
+        >>> reloaded_qs
+        <QuerySet [{'id': 1, 'name': 'Beatles Blog'}]>
+
 .. admonition:: You can't share pickles between versions
 
     Pickles of ``QuerySets`` are only valid for the version of Django that
@@ -630,7 +644,7 @@ A few subtleties that are worth mentioning:
   ignored.
 
 * Calling :meth:`only()` and :meth:`defer()` after ``values()`` doesn't make
-  sense, so doing so will raise a ``NotImplementedError``.
+  sense, so doing so will raise a ``TypeError``.
 
 * Combining transforms and aggregates requires the use of two :meth:`annotate`
   calls, either explicitly or as keyword arguments to :meth:`values`. As above,
@@ -820,10 +834,6 @@ object. If it's ``None``, Django uses the :ref:`current time zone
 ambiguous datetimes in daylight saving time. By default (when ``is_dst=None``),
 ``pytz`` raises an exception for such datetimes.
 
-.. versionadded:: 3.1
-
-    The ``is_dst`` parameter was added.
-
 .. _database-time-zone-definitions:
 
 .. note::
@@ -850,8 +860,8 @@ ambiguous datetimes in daylight saving time. By default (when ``is_dst=None``),
 
 .. method:: none()
 
-Calling none() will create a queryset that never returns any objects and no
-query will be executed when accessing the results. A qs.none() queryset
+Calling ``none()`` will create a queryset that never returns any objects and no
+query will be executed when accessing the results. A ``qs.none()`` queryset
 is an instance of ``EmptyQuerySet``.
 
 Examples::
@@ -903,11 +913,11 @@ resulting ``QuerySet``. For example::
     >>> qs1.union(qs2).order_by('name')
 
 In addition, only ``LIMIT``, ``OFFSET``, ``COUNT(*)``, ``ORDER BY``, and
-specifying columns (i.e. slicing, :meth:`count`, :meth:`order_by`, and
-:meth:`values()`/:meth:`values_list()`) are allowed on the resulting
-``QuerySet``. Further, databases place restrictions on what operations are
-allowed in the combined queries. For example, most databases don't allow
-``LIMIT`` or ``OFFSET`` in the combined queries.
+specifying columns (i.e. slicing, :meth:`count`, :meth:`exists`,
+:meth:`order_by`, and :meth:`values()`/:meth:`values_list()`) are allowed
+on the resulting ``QuerySet``. Further, databases place restrictions on
+what operations are allowed in the combined queries. For example, most
+databases don't allow ``LIMIT`` or ``OFFSET`` in the combined queries.
 
 ``intersection()``
 ~~~~~~~~~~~~~~~~~~
@@ -1280,6 +1290,26 @@ where prefetching with a custom ``QuerySet`` is useful:
     >>>
     >>> restaurants = Restaurant.objects.prefetch_related(
     ...     Prefetch('best_pizza', queryset=queryset))
+
+When using multiple databases, ``Prefetch`` will respect your choice of
+database. If the inner query does not specify a database, it will use the
+database selected by the outer query. All of the following are valid::
+
+    >>> # Both inner and outer queries will use the 'replica' database
+    >>> Restaurant.objects.prefetch_related('pizzas__toppings').using('replica')
+    >>> Restaurant.objects.prefetch_related(
+    ...     Prefetch('pizzas__toppings'),
+    ... ).using('replica')
+    >>>
+    >>> # Inner will use the 'replica' database; outer will use 'default' database
+    >>> Restaurant.objects.prefetch_related(
+    ...     Prefetch('pizzas__toppings', queryset=Toppings.objects.using('replica')),
+    ... )
+    >>>
+    >>> # Inner will use 'replica' database; outer will use 'cold-storage' database
+    >>> Restaurant.objects.prefetch_related(
+    ...     Prefetch('pizzas__toppings', queryset=Toppings.objects.using('replica')),
+    ... ).using('cold-storage')
 
 .. note::
 
@@ -1809,7 +1839,7 @@ raised if ``select_for_update()`` is used in autocommit mode.
 ``raw()``
 ~~~~~~~~~
 
-.. method:: raw(raw_query, params=None, translations=None)
+.. method:: raw(raw_query, params=(), translations=None)
 
 Takes a raw SQL query, executes it, and returns a
 ``django.db.models.query.RawQuerySet`` instance. This ``RawQuerySet`` instance
@@ -1823,6 +1853,11 @@ See the :doc:`/topics/db/sql` for more information.
   ``raw()`` always triggers a new query and doesn't account for previous
   filtering. As such, it should generally be called from the ``Manager`` or
   from a fresh ``QuerySet`` instance.
+
+.. versionchanged:: 3.2
+
+    The default value of the ``params`` argument was changed from ``None`` to
+    an empty tuple.
 
 Operators that return new ``QuerySet``\s
 ----------------------------------------
@@ -2122,9 +2157,9 @@ exists in the database, an :exc:`~django.db.IntegrityError` is raised.
 
 This method inserts the provided list of objects into the database in an
 efficient manner (generally only 1 query, no matter how many objects there
-are)::
+are), and returns created objects as a list, in the same order as provided::
 
-    >>> Entry.objects.bulk_create([
+    >>> objs = Entry.objects.bulk_create([
     ...     Entry(headline='This is a test'),
     ...     Entry(headline='This is only a test'),
     ... ])
@@ -2175,12 +2210,6 @@ normally supports it).
 .. _MySQL documentation: https://dev.mysql.com/doc/refman/en/sql-mode.html#ignore-strict-comparison
 .. _MariaDB documentation: https://mariadb.com/kb/en/ignore/
 
-Returns ``objs`` as cast to a list, in the same order as provided.
-
-.. versionchanged:: 3.1
-
-    Support for the fetching primary key attributes on MariaDB 10.5+ was added.
-
 ``bulk_update()``
 ~~~~~~~~~~~~~~~~~
 
@@ -2210,7 +2239,8 @@ them, but it has a few caveats:
   ``batch_size``.
 * Updating fields defined on multi-table inheritance ancestors will incur an
   extra query per ancestor.
-* If ``objs`` contains duplicates, only the first one is updated.
+* When an individual batch contains duplicates, only the first instance in that
+  batch will result in an update.
 
 The ``batch_size`` parameter controls how many objects are saved in a single
 query. The default is to update all objects in one batch, except for SQLite
@@ -2245,7 +2275,7 @@ database query like ``count()`` would.
 ``in_bulk()``
 ~~~~~~~~~~~~~
 
-.. method:: in_bulk(id_list=None, field_name='pk')
+.. method:: in_bulk(id_list=None, *, field_name='pk')
 
 Takes a list of field values (``id_list``) and the ``field_name`` for those
 values, and returns a dictionary mapping each value to an instance of the
@@ -2472,24 +2502,11 @@ if not. This tries to perform the query in the simplest and fastest way
 possible, but it *does* execute nearly the same query as a normal
 :class:`.QuerySet` query.
 
-:meth:`~.QuerySet.exists` is useful for searches relating to both
-object membership in a :class:`.QuerySet` and to the existence of any objects in
-a :class:`.QuerySet`, particularly in the context of a large :class:`.QuerySet`.
+:meth:`~.QuerySet.exists` is useful for searches relating to the existence of
+any objects in a :class:`.QuerySet`, particularly in the context of a large
+:class:`.QuerySet`.
 
-The most efficient method of finding whether a model with a unique field
-(e.g. ``primary_key``) is a member of a :class:`.QuerySet` is::
-
-    entry = Entry.objects.get(pk=123)
-    if some_queryset.filter(pk=entry.pk).exists():
-        print("Entry contained in queryset")
-
-Which will be faster than the following which requires evaluating and iterating
-through the entire queryset::
-
-    if entry in some_queryset:
-       print("Entry contained in QuerySet")
-
-And to find whether a queryset contains any items::
+To find whether a queryset contains any items::
 
     if some_queryset.exists():
         print("There is at least one object in some_queryset")
@@ -2507,6 +2524,35 @@ that it will be at some point, then using ``some_queryset.exists()`` will do
 more overall work (one query for the existence check plus an extra one to later
 retrieve the results) than using ``bool(some_queryset)``, which retrieves the
 results and then checks if any were returned.
+
+``contains()``
+~~~~~~~~~~~~~~
+
+.. method:: contains(obj)
+
+.. versionadded:: 4.0
+
+Returns ``True`` if the :class:`.QuerySet` contains ``obj``, and ``False`` if
+not. This tries to perform the query in the simplest and fastest way possible.
+
+:meth:`contains` is useful for checking an object membership in a
+:class:`.QuerySet`, particularly in the context of a large :class:`.QuerySet`.
+
+To check whether a queryset contains a specific item::
+
+    if some_queryset.contains(obj):
+        print('Entry contained in queryset')
+
+This will be faster than the following which requires evaluating and iterating
+through the entire queryset::
+
+    if obj in some_queryset:
+        print('Entry contained in queryset')
+
+Like :meth:`exists`, if ``some_queryset`` has not yet been evaluated, but you
+know that it will be at some point, then using ``some_queryset.contains(obj)``
+will make an additional database query, generally resulting in slower overall
+performance.
 
 ``update()``
 ~~~~~~~~~~~~
@@ -2691,7 +2737,7 @@ PostgreSQL's ``'TEXT'`` output and is used by default, if supported.
 Some databases accept flags that can return more information about the query.
 Pass these flags as keyword arguments. For example, when using PostgreSQL::
 
-    >>> print(Blog.objects.filter(title='My Blog').explain(verbose=True))
+    >>> print(Blog.objects.filter(title='My Blog').explain(verbose=True, analyze=True))
     Seq Scan on public.blog  (cost=0.00..35.50 rows=10 width=12) (actual time=0.004..0.004 rows=10 loops=1)
       Output: id, title
       Filter: (blog.title = 'My Blog'::bpchar)
@@ -2702,11 +2748,6 @@ On some databases, flags may cause the query to be executed which could have
 adverse effects on your database. For example, the ``ANALYZE`` flag supported
 by MariaDB, MySQL 8.0.18+, and PostgreSQL could result in changes to data if
 there are triggers or if a function is called, even for a ``SELECT`` query.
-
-.. versionchanged:: 3.1
-
-    Support for the ``'TREE'`` format on MySQL 8.0.16+ and ``analyze`` option
-    on MariaDB and MySQL 8.0.18+ were added.
 
 .. _field-lookups:
 
@@ -3234,8 +3275,6 @@ in the database <database-time-zone-definitions>`.
 ``iso_week_day``
 ~~~~~~~~~~~~~~~~
 
-.. versionadded:: 3.1
-
 For date and datetime fields, an exact ISO 8601 day of the week match. Allows
 chaining additional field lookups.
 
@@ -3400,11 +3439,6 @@ SQL equivalent:
 
     SELECT ... WHERE pub_date IS NULL;
 
-.. deprecated:: 3.1
-
-    Using non-boolean values as the right-hand side is deprecated, use ``True``
-    or ``False`` instead. In Django 4.0, the exception will be raised.
-
 .. fieldlookup:: regex
 
 ``regex``
@@ -3477,8 +3511,7 @@ documentation to learn how to create your aggregates.
     SQLite can't handle aggregation on date/time fields out of the box.
     This is because there are no native date/time fields in SQLite and Django
     currently emulates these features using a text field. Attempts to use
-    aggregation on date/time fields in SQLite will raise
-    ``NotImplementedError``.
+    aggregation on date/time fields in SQLite will raise ``NotSupportedError``.
 
 .. admonition:: Note
 
@@ -3492,8 +3525,12 @@ All aggregates have the following parameters in common:
 ``expressions``
 ~~~~~~~~~~~~~~~
 
-Strings that reference fields on the model, or :doc:`query expressions
-</ref/models/expressions>`.
+Strings that reference fields on the model, transforms of the field, or
+:doc:`query expressions </ref/models/expressions>`.
+
+.. versionchanged:: 3.2
+
+    Support for transforms of the field was added.
 
 ``output_field``
 ~~~~~~~~~~~~~~~~
@@ -3718,6 +3755,10 @@ lookups or :class:`Prefetch` objects you want to prefetch for. For example::
     >>> from django.db.models import prefetch_related_objects
     >>> restaurants = fetch_top_restaurants_from_cache()  # A list of Restaurants
     >>> prefetch_related_objects(restaurants, 'pizzas__toppings')
+
+When using multiple databases with ``prefetch_related_objects``, the prefetch
+query will use the database associated with the model instance. This can be
+overridden by using a custom queryset in a related lookup.
 
 ``FilteredRelation()`` objects
 ------------------------------

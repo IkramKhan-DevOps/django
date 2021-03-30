@@ -438,12 +438,13 @@ class IsOverriddenTest(SimpleTestCase):
         self.assertEqual(repr(lazy_settings), expected)
 
 
-class TestListSettings(unittest.TestCase):
+class TestListSettings(SimpleTestCase):
     """
     Make sure settings that should be lists or tuples throw
     ImproperlyConfigured if they are set to a string instead of a list or tuple.
     """
     list_or_tuple_settings = (
+        'ALLOWED_HOSTS',
         "INSTALLED_APPS",
         "TEMPLATE_DIRS",
         "LOCALE_PATHS",
@@ -452,11 +453,12 @@ class TestListSettings(unittest.TestCase):
     def test_tuple_settings(self):
         settings_module = ModuleType('fake_settings_module')
         settings_module.SECRET_KEY = 'foo'
+        msg = 'The %s setting must be a list or a tuple.'
         for setting in self.list_or_tuple_settings:
             setattr(settings_module, setting, ('non_list_or_tuple_value'))
             sys.modules['fake_settings_module'] = settings_module
             try:
-                with self.assertRaises(ImproperlyConfigured):
+                with self.assertRaisesMessage(ImproperlyConfigured, msg % setting):
                     Settings('fake_settings_module')
             finally:
                 del sys.modules['fake_settings_module']
@@ -573,10 +575,12 @@ class MediaURLStaticURLPrefixTest(SimpleTestCase):
             set_script_prefix(val)
 
     def test_not_prefixed(self):
-        # Don't add SCRIPT_NAME prefix to valid URLs, absolute paths or None.
+        # Don't add SCRIPT_NAME prefix to absolute paths, URLs, or None.
         tests = (
             '/path/',
             'http://myhost.com/path/',
+            'http://myhost/path/',
+            'https://myhost/path/',
             None,
         )
         for setting in ('MEDIA_URL', 'STATIC_URL'):

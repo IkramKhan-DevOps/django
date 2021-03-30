@@ -5,7 +5,6 @@ from django.db import close_old_connections, connection
 from django.test import (
     RequestFactory, SimpleTestCase, TransactionTestCase, override_settings,
 )
-from django.utils.version import PY37
 
 
 class HandlerTests(SimpleTestCase):
@@ -176,10 +175,14 @@ class HandlerRequestTests(SimpleTestCase):
         response = self.client.get('/suspicious/')
         self.assertEqual(response.status_code, 400)
 
+    def test_bad_request_in_view_returns_400(self):
+        response = self.client.get('/bad_request/')
+        self.assertEqual(response.status_code, 400)
+
     def test_invalid_urls(self):
         response = self.client.get('~%A9helloworld')
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.context['request_path'], '/~%25A9helloworld' if PY37 else '/%7E%25A9helloworld')
+        self.assertEqual(response.context['request_path'], '/~%25A9helloworld')
 
         response = self.client.get('d%aao%aaw%aan%aal%aao%aaa%aad%aa/')
         self.assertEqual(response.context['request_path'], '/d%25AAo%25AAw%25AAn%25AAl%25AAo%25AAa%25AAd%25AA')
@@ -257,6 +260,10 @@ class AsyncHandlerRequestTests(SimpleTestCase):
 
     async def test_suspiciousop_in_view_returns_400(self):
         response = await self.async_client.get('/suspicious/')
+        self.assertEqual(response.status_code, 400)
+
+    async def test_bad_request_in_view_returns_400(self):
+        response = await self.async_client.get('/bad_request/')
         self.assertEqual(response.status_code, 400)
 
     async def test_no_response(self):

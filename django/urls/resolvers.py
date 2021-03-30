@@ -59,9 +59,16 @@ class ResolverMatch:
         return (self.func, self.args, self.kwargs)[index]
 
     def __repr__(self):
-        return "ResolverMatch(func=%s, args=%s, kwargs=%s, url_name=%s, app_names=%s, namespaces=%s, route=%s)" % (
-            self._func_path, self.args, self.kwargs, self.url_name,
-            self.app_names, self.namespaces, self.route,
+        if isinstance(self.func, functools.partial):
+            func = repr(self.func)
+        else:
+            func = self._func_path
+        return (
+            'ResolverMatch(func=%s, args=%r, kwargs=%r, url_name=%r, '
+            'app_names=%r, namespaces=%r, route=%r)' % (
+                func, self.args, self.kwargs, self.url_name,
+                self.app_names, self.namespaces, self.route,
+            )
         )
 
 
@@ -371,7 +378,9 @@ class URLPattern:
         callback = self.callback
         if isinstance(callback, functools.partial):
             callback = callback.func
-        if not hasattr(callback, '__name__'):
+        if hasattr(callback, 'view_class'):
+            callback = callback.view_class
+        elif not hasattr(callback, '__name__'):
             return callback.__module__ + "." + callback.__class__.__name__
         return callback.__module__ + "." + callback.__qualname__
 
@@ -581,7 +590,7 @@ class URLResolver:
                             self._join_route(current_route, sub_match.route),
                             tried,
                         )
-                    self._extend_tried(tried, pattern)
+                    tried.append([pattern])
             raise Resolver404({'tried': tried, 'path': new_path})
         raise Resolver404({'path': path})
 

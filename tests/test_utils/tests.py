@@ -1,3 +1,4 @@
+import logging
 import os
 import unittest
 import warnings
@@ -16,8 +17,8 @@ from django.forms import EmailField, IntegerField
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import (
-    SimpleTestCase, TestCase, TransactionTestCase, skipIfDBFeature,
-    skipUnlessDBFeature,
+    SimpleTestCase, TestCase, TransactionTestCase, ignore_warnings,
+    skipIfDBFeature, skipUnlessDBFeature,
 )
 from django.test.html import HTMLParseError, parse_html
 from django.test.utils import (
@@ -25,6 +26,8 @@ from django.test.utils import (
     override_settings, setup_test_environment,
 )
 from django.urls import NoReverseMatch, path, reverse, reverse_lazy
+from django.utils.deprecation import RemovedInDjango41Warning
+from django.utils.log import DEFAULT_LOGGING
 
 from .models import Car, Person, PossessedCar
 from .views import empty_response
@@ -243,17 +246,32 @@ class AssertQuerysetEqualTests(TestCase):
         cls.p1 = Person.objects.create(name='p1')
         cls.p2 = Person.objects.create(name='p2')
 
+    def test_empty(self):
+        self.assertQuerysetEqual(Person.objects.filter(name='p3'), [])
+
     def test_ordered(self):
         self.assertQuerysetEqual(
             Person.objects.all().order_by('name'),
-            [repr(self.p1), repr(self.p2)]
+            [self.p1, self.p2],
         )
 
     def test_unordered(self):
         self.assertQuerysetEqual(
             Person.objects.all().order_by('name'),
-            [repr(self.p2), repr(self.p1)],
+            [self.p2, self.p1],
             ordered=False
+        )
+
+    def test_queryset(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            Person.objects.all().order_by('name'),
+        )
+
+    def test_flat_values_list(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name').values_list('name', flat=True),
+            ['p1', 'p2'],
         )
 
     def test_transform(self):
@@ -263,20 +281,27 @@ class AssertQuerysetEqualTests(TestCase):
             transform=lambda x: x.pk
         )
 
+    def test_repr_transform(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            [repr(self.p1), repr(self.p2)],
+            transform=repr,
+        )
+
     def test_undefined_order(self):
         # Using an unordered queryset with more than one ordered value
         # is an error.
-        msg = 'Trying to compare non-ordered queryset against more than one ordered values'
+        msg = (
+            'Trying to compare non-ordered queryset against more than one '
+            'ordered value.'
+        )
         with self.assertRaisesMessage(ValueError, msg):
             self.assertQuerysetEqual(
                 Person.objects.all(),
-                [repr(self.p1), repr(self.p2)]
+                [self.p1, self.p2],
             )
         # No error for one value.
-        self.assertQuerysetEqual(
-            Person.objects.filter(name='p1'),
-            [repr(self.p1)]
-        )
+        self.assertQuerysetEqual(Person.objects.filter(name='p1'), [self.p1])
 
     def test_repeated_values(self):
         """
@@ -296,14 +321,71 @@ class AssertQuerysetEqualTests(TestCase):
         with self.assertRaises(AssertionError):
             self.assertQuerysetEqual(
                 self.p1.cars.all(),
-                [repr(batmobile), repr(k2000)],
+                [batmobile, k2000],
                 ordered=False
             )
         self.assertQuerysetEqual(
             self.p1.cars.all(),
-            [repr(batmobile)] * 2 + [repr(k2000)] * 4,
+            [batmobile] * 2 + [k2000] * 4,
             ordered=False
         )
+
+    def test_maxdiff(self):
+        names = ['Joe Smith %s' % i for i in range(20)]
+        Person.objects.bulk_create([Person(name=name) for name in names])
+        names.append('Extra Person')
+
+        with self.assertRaises(AssertionError) as ctx:
+            self.assertQuerysetEqual(
+                Person.objects.filter(name__startswith='Joe'),
+                names,
+                ordered=False,
+                transform=lambda p: p.name,
+            )
+        self.assertIn('Set self.maxDiff to None to see it.', str(ctx.exception))
+
+        original = self.maxDiff
+        self.maxDiff = None
+        try:
+            with self.assertRaises(AssertionError) as ctx:
+                self.assertQuerysetEqual(
+                    Person.objects.filter(name__startswith='Joe'),
+                    names,
+                    ordered=False,
+                    transform=lambda p: p.name,
+                )
+        finally:
+            self.maxDiff = original
+        exception_msg = str(ctx.exception)
+        self.assertNotIn('Set self.maxDiff to None to see it.', exception_msg)
+        for name in names:
+            self.assertIn(name, exception_msg)
+
+
+class AssertQuerysetEqualDeprecationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.p1 = Person.objects.create(name='p1')
+        cls.p2 = Person.objects.create(name='p2')
+
+    @ignore_warnings(category=RemovedInDjango41Warning)
+    def test_str_values(self):
+        self.assertQuerysetEqual(
+            Person.objects.all().order_by('name'),
+            [repr(self.p1), repr(self.p2)],
+        )
+
+    def test_str_values_warning(self):
+        msg = (
+            "In Django 4.1, repr() will not be called automatically on a "
+            "queryset when compared to string values. Set an explicit "
+            "'transform' to silence this warning."
+        )
+        with self.assertRaisesMessage(RemovedInDjango41Warning, msg):
+            self.assertQuerysetEqual(
+                Person.objects.all().order_by('name'),
+                [repr(self.p1), repr(self.p2)],
+            )
 
 
 @override_settings(ROOT_URLCONF='test_utils.urls')
@@ -632,6 +714,27 @@ class HTMLEqualTests(SimpleTestCase):
             with self.subTest(html1):
                 self.assertHTMLEqual(html1, html2)
 
+    def test_boolean_attribute(self):
+        html1 = '<input checked>'
+        html2 = '<input checked="">'
+        html3 = '<input checked="checked">'
+        self.assertHTMLEqual(html1, html2)
+        self.assertHTMLEqual(html1, html3)
+        self.assertHTMLEqual(html2, html3)
+        self.assertHTMLNotEqual(html1, '<input checked="invalid">')
+        self.assertEqual(str(parse_html(html1)), '<input checked>')
+        self.assertEqual(str(parse_html(html2)), '<input checked>')
+        self.assertEqual(str(parse_html(html3)), '<input checked>')
+
+    def test_non_boolean_attibutes(self):
+        html1 = '<input value>'
+        html2 = '<input value="">'
+        html3 = '<input value="value">'
+        self.assertHTMLEqual(html1, html2)
+        self.assertHTMLNotEqual(html1, html3)
+        self.assertEqual(str(parse_html(html1)), '<input value="">')
+        self.assertEqual(str(parse_html(html2)), '<input value="">')
+
     def test_normalize_refs(self):
         pairs = [
             ('&#39;', '&#x27;'),
@@ -768,10 +871,29 @@ class HTMLEqualTests(SimpleTestCase):
         dom2 = parse_html('<p>foo<p>bar</p></p>')
         self.assertEqual(dom2.count(dom1), 0)
 
-        # html with a root element contains the same html with no root element
+        # HTML with a root element contains the same HTML with no root element.
         dom1 = parse_html('<p>foo</p><p>bar</p>')
         dom2 = parse_html('<div><p>foo</p><p>bar</p></div>')
         self.assertEqual(dom2.count(dom1), 1)
+
+        # Target of search is a sequence of child elements and appears more
+        # than once.
+        dom2 = parse_html('<div><p>foo</p><p>bar</p><p>foo</p><p>bar</p></div>')
+        self.assertEqual(dom2.count(dom1), 2)
+
+        # Searched HTML has additional children.
+        dom1 = parse_html('<a/><b/>')
+        dom2 = parse_html('<a/><b/><c/>')
+        self.assertEqual(dom2.count(dom1), 1)
+
+        # No match found in children.
+        dom1 = parse_html('<b/><a/>')
+        self.assertEqual(dom2.count(dom1), 0)
+
+        # Target of search found among children and grandchildren.
+        dom1 = parse_html('<b/><b/>')
+        dom2 = parse_html('<a><b/><b/></a><b/><b/>')
+        self.assertEqual(dom2.count(dom1), 2)
 
     def test_parsing_errors(self):
         with self.assertRaises(AssertionError):
@@ -1004,6 +1126,47 @@ class AssertWarnsMessageTests(SimpleTestCase):
             warnings.warn('[.*x+]y?', UserWarning)
         with self.assertWarnsMessage(UserWarning, '[.*x+]y?'):
             func1()
+
+
+# TODO: Remove when dropping support for PY39.
+class AssertNoLogsTest(SimpleTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        logging.config.dictConfig(DEFAULT_LOGGING)
+        cls.addClassCleanup(logging.config.dictConfig, settings.LOGGING)
+
+    def setUp(self):
+        self.logger = logging.getLogger('django')
+
+    @override_settings(DEBUG=True)
+    def test_fails_when_log_emitted(self):
+        msg = "Unexpected logs found: ['INFO:django:FAIL!']"
+        with self.assertRaisesMessage(AssertionError, msg):
+            with self.assertNoLogs('django', 'INFO'):
+                self.logger.info('FAIL!')
+
+    @override_settings(DEBUG=True)
+    def test_text_level(self):
+        with self.assertNoLogs('django', 'INFO'):
+            self.logger.debug('DEBUG logs are ignored.')
+
+    @override_settings(DEBUG=True)
+    def test_int_level(self):
+        with self.assertNoLogs('django', logging.INFO):
+            self.logger.debug('DEBUG logs are ignored.')
+
+    @override_settings(DEBUG=True)
+    def test_default_level(self):
+        with self.assertNoLogs('django'):
+            self.logger.debug('DEBUG logs are ignored.')
+
+    @override_settings(DEBUG=True)
+    def test_does_not_hide_other_failures(self):
+        msg = '1 != 2'
+        with self.assertRaisesMessage(AssertionError, msg):
+            with self.assertNoLogs('django'):
+                self.assertEqual(1, 2)
 
 
 class AssertFieldOutputTests(SimpleTestCase):

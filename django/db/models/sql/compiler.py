@@ -6,8 +6,8 @@ from itertools import chain
 from django.core.exceptions import EmptyResultSet, FieldError
 from django.db import DatabaseError, NotSupportedError
 from django.db.models.constants import LOOKUP_SEP
-from django.db.models.expressions import F, OrderBy, Random, RawSQL, Ref, Value
-from django.db.models.functions import Cast
+from django.db.models.expressions import F, OrderBy, RawSQL, Ref, Value
+from django.db.models.functions import Cast, Random
 from django.db.models.query_utils import Q, select_related_descend
 from django.db.models.sql.constants import (
     CURSOR, GET_ITERATOR_CHUNK_SIZE, MULTI, NO_RESULTS, ORDER_DIR, SINGLE,
@@ -125,11 +125,12 @@ class SQLCompiler:
             cols = expr.get_group_by_cols()
             for col in cols:
                 expressions.append(col)
-        for expr, (sql, params, is_ref) in order_by:
-            # Skip References to the select clause, as all expressions in the
-            # select clause are already part of the group by.
-            if not is_ref:
-                expressions.extend(expr.get_group_by_cols())
+        if not self._meta_ordering:
+            for expr, (sql, params, is_ref) in order_by:
+                # Skip references to the SELECT clause, as all expressions in
+                # the SELECT clause are already part of the GROUP BY.
+                if not is_ref:
+                    expressions.extend(expr.get_group_by_cols())
         having_group_by = self.having.get_group_by_cols() if self.having else ()
         for expr in having_group_by:
             expressions.append(expr)
@@ -322,10 +323,15 @@ class SQLCompiler:
             if col in self.query.annotations:
                 # References to an expression which is masked out of the SELECT
                 # clause.
-                expr = self.query.annotations[col]
-                if isinstance(expr, Value):
-                    # output_field must be resolved for constants.
-                    expr = Cast(expr, expr.output_field)
+                if self.query.combinator and self.select:
+                    # Don't use the resolved annotation because other
+                    # combinated queries might define it differently.
+                    expr = F(col)
+                else:
+                    expr = self.query.annotations[col]
+                    if isinstance(expr, Value):
+                        # output_field must be resolved for constants.
+                        expr = Cast(expr, expr.output_field)
                 order_by.append((OrderBy(expr, descending=descending), False))
                 continue
 
@@ -359,7 +365,7 @@ class SQLCompiler:
 
         for expr, is_ref in order_by:
             resolved = expr.resolve_expression(self.query, allow_joins=True, reuse=None)
-            if self.query.combinator:
+            if self.query.combinator and self.select:
                 src = resolved.get_source_expressions()[0]
                 expr_src = expr.get_source_expressions()[0]
                 # Relabel order by columns to raw numbers if this is a combined
@@ -378,10 +384,14 @@ class SQLCompiler:
                 else:
                     if col_alias:
                         raise DatabaseError('ORDER BY term does not match any column in the result set.')
-                    # Add column used in ORDER BY clause without an alias to
-                    # the selected columns.
-                    self.query.add_select_col(src)
-                    resolved.set_source_expressions([RawSQL('%d' % len(self.query.select), ())])
+                    # Add column used in ORDER BY clause to the selected
+                    # columns and to each combined query.
+                    order_by_idx = len(self.query.select) + 1
+                    col_name = f'__orderbycol{order_by_idx}'
+                    for q in self.query.combined_queries:
+                        q.add_annotation(expr_src, col_name)
+                    self.query.add_select_col(resolved, col_name)
+                    resolved.set_source_expressions([RawSQL(f'{order_by_idx}', ())])
             sql, params = self.compile(resolved)
             # Don't add the same column twice, but the order direction is
             # not taken into account so we strip it. When this entire method
@@ -1596,8 +1606,11 @@ class SQLAggregateCompiler(SQLCompiler):
         sql = ', '.join(sql)
         params = tuple(params)
 
-        sql = 'SELECT %s FROM (%s) subquery' % (sql, self.query.subquery)
-        params = params + self.query.sub_params
+        inner_query_sql, inner_query_params = self.query.inner_query.get_compiler(
+            self.using
+        ).as_sql(with_col_aliases=True)
+        sql = 'SELECT %s FROM (%s) subquery' % (sql, inner_query_sql)
+        params = params + inner_query_params
         return sql, params
 
 

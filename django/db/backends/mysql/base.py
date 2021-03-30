@@ -19,17 +19,17 @@ except ImportError as err:
         'Did you install mysqlclient?'
     ) from err
 
-from MySQLdb.constants import CLIENT, FIELD_TYPE                # isort:skip
-from MySQLdb.converters import conversions                      # isort:skip
+from MySQLdb.constants import CLIENT, FIELD_TYPE
+from MySQLdb.converters import conversions
 
 # Some of these import MySQLdb, so import them after checking if it's installed.
-from .client import DatabaseClient                          # isort:skip
-from .creation import DatabaseCreation                      # isort:skip
-from .features import DatabaseFeatures                      # isort:skip
-from .introspection import DatabaseIntrospection            # isort:skip
-from .operations import DatabaseOperations                  # isort:skip
-from .schema import DatabaseSchemaEditor                    # isort:skip
-from .validation import DatabaseValidation                  # isort:skip
+from .client import DatabaseClient
+from .creation import DatabaseCreation
+from .features import DatabaseFeatures
+from .introspection import DatabaseIntrospection
+from .operations import DatabaseOperations
+from .schema import DatabaseSchemaEditor
+from .validation import DatabaseValidation
 
 version = Database.version_info
 if version < (1, 4, 0):
@@ -119,7 +119,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         'IPAddressField': 'char(15)',
         'GenericIPAddressField': 'char(39)',
         'JSONField': 'json',
-        'NullBooleanField': 'bool',
         'OneToOneField': 'integer',
         'PositiveBigIntegerField': 'bigint UNSIGNED',
         'PositiveIntegerField': 'integer UNSIGNED',
@@ -231,7 +230,14 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     @async_unsafe
     def get_new_connection(self, conn_params):
-        return Database.connect(**conn_params)
+        connection = Database.connect(**conn_params)
+        # bytes encoder in mysqlclient doesn't work and was added only to
+        # prevent KeyErrors in Django < 2.0. We can remove this workaround when
+        # mysqlclient 2.1 becomes the minimal mysqlclient supported by Django.
+        # See https://github.com/PyMySQL/mysqlclient/issues/489
+        if connection.encoders.get(bytes) is bytes:
+            connection.encoders.pop(bytes)
+        return connection
 
     def init_connection_state(self):
         assignments = []
